@@ -1,1 +1,0 @@
-distance_matrix = torch.from_numpy(distance_matrix).to(device)
