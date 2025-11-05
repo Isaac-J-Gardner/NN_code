@@ -25,6 +25,7 @@ import seaborn as sns
 import pandas as pd
 
 import networkx as netx
+from networkx.algorithms.community import greedy_modularity_communities, modularity
 
 np.random.seed(211)
 random.seed(211)
@@ -164,7 +165,7 @@ def test_euclidean(x, y):
 print(f"Initial, pre-training correlation between distance and weight matrices (should be approx. 0): {test_euclidean(distance_matrix, net.lif1.recurrent.weight)}")
      
 #Training parameters
-num_epochs = 10
+num_epochs = 20
 comms_factor = 1
 
 #Regularization parameters
@@ -264,11 +265,22 @@ for epoch in range(1, num_epochs + 1):
         test_acc_hist.append(correct / total)
         test_loss_hist.append(test_loss.item())
 
+        G = netx.from_numpy_array(net.lif1.recurrent.weight.detach().cpu().numpy())
+
+        # Detect communities (e.g. Louvain or greedy modularity)
+        communities = list(greedy_modularity_communities(G))
+
+        # Compute Newman's modularity Q
+        Q = modularity(G, communities, weight='weight')
+
     #Print statements
     #if epoch % 5 == 0:
     print(f"Epoch {epoch}/{num_epochs} === Train loss: {loss_val.item():.2f} --- ", end = "")
     print(f"Train accuracy: {acc * 100:.2f}% --- ", end = "")
     print(f"Val. loss: {test_loss.item():.2f} --- ", end = "")
     print(f"Val. accuracy: {100 * correct / total:.2f}% --- ", end = "")
-    print(f"Regularization term: {regularization_term.item():.4f}")
+    print(f"Regularization term: {regularization_term.item():.4f}", end = "")
+    print(f"Modularity: {Q:.4f}")
+
+
 

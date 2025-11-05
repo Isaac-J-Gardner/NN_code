@@ -26,6 +26,7 @@ import pandas as pd
 
 import networkx as netx
 from networkx.algorithms.community import greedy_modularity_communities, modularity
+import csv
 
 np.random.seed(211)
 random.seed(211)
@@ -132,7 +133,7 @@ distance_metric = 'euclidean'
 distance_power = 1
 
 #Define each dimension's neuron
-ny = np.array([2])
+ny = np.array([1])
 nx = np.arange(network_structure[0])
 nz = np.arange(network_structure[2])
 
@@ -160,22 +161,7 @@ input_coords = np.concatenate([input_coordinates, input_coordinates], axis=0)
 in_euc_vect = scipy.spatial.distance.cdist(input_coords, np.stack(coordinates, axis=1), metric=distance_metric) #dimensions 32768 X 100
 input_distance_matrix = in_euc_vect.astype('float64')
 
-#create fc1 weight matrix based on distance matrix
-#gaussian fall-off
-sig = 6.0 #effective connecting distance of 6
-gaus_weights = np.exp(- (input_distance_matrix**2) / (2 * sig**2))
 
-#scaling weights
-a = 1/ np.sqrt(num_inputs)
-scale = a/gaus_weights.max() #0.8 is max value returned by gaus_weights
-rands = np.random.uniform(-1.0, 1.0, size=gaus_weights.shape) * scale
-fc1_weights = gaus_weights * rands #dimensions: input X hidden
-
-#assign to net
-with torch.no_grad():
-    net.fc1.weight.copy_(torch.tensor(fc1_weights.T, dtype=net.fc1.weight.dtype))
-    net.fc1.bias.zero_()
-#Diagnostic tests -----
 
 #Test for spatial regularization
 def test_euclidean(x, y):
@@ -191,120 +177,152 @@ def test_euclidean(x, y):
 print(f"Initial, pre-training correlation between distance and weight matrices (should be approx. 0): {test_euclidean(distance_matrix, net.lif1.recurrent.weight)}")
      
 #Training parameters
-num_epochs = 20
+num_epochs = 25
 comms_factor = 1
 
 #Regularization parameters
 regu_strength = 0.5e-1
 
-#Initialize variables of interest
-train_loss_hist = []
-train_acc_hist = []
-rec_tot_hist = []
-corr_hist = []
-test_acc_hist = []
-test_loss_hist = []
-weight_matrix = []
-
-#Pre-training extractions -- calculate correlation (distance, weights) and total weights before training
-rec_tot_hist.append(torch.sum(torch.abs(net.lif1.recurrent.weight.detach())))
-corr_hist.append(test_euclidean(distance_matrix, net.lif1.recurrent.weight))
-
+sig = 0 #effective connecting distance of 6
 #Training loop
-for epoch in range(1, num_epochs + 1):
-    for i, (data, targets) in enumerate(iter(trainloader)):
-        # Load data on CUDA
-        data = data.to(device)
-        targets = targets.to(device)
+for run in range(15):
+    csv_file = open(f"training_run_{run}.csv", mode="w", newline="")
+    writer = csv.writer(csv_file)
+    writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "regularization_term", "modularity_Q"])
 
-        # Set model to training mode
-        net.train()
-        spk_outputs, mem_outputs = net(data)
+    train_loss_hist = []
+    train_acc_hist = []
+    rec_tot_hist = []
+    corr_hist = []
+    test_acc_hist = []
+    test_loss_hist = []
+    weight_matrix = []
 
-        # Create absolute weight matrix (don't detach)
-        abs_weight_matrix = torch.abs(net.lif1.recurrent.weight)
+    rec_tot_hist.append(torch.sum(torch.abs(net.lif1.recurrent.weight.detach())))
+    corr_hist.append(test_euclidean(distance_matrix, net.lif1.recurrent.weight))
 
-        # Calculate communicability (detach to prevent complex gradient issues)
+    if sig > 0:
+        gaus_weights = np.exp(- (input_distance_matrix**2) / (2 * sig**2))
+
+        #scaling weights
+        a = 1/ np.sqrt(num_inputs)
+        scale = a/gaus_weights.max() #0.8 is max value returned by gaus_weights
+        rands = np.random.uniform(-1.0, 1.0, size=gaus_weights.shape) * scale
+        fc1_weights = gaus_weights * rands #dimensions: input X hidden
+
+        #assign to net
         with torch.no_grad():
-            step1 = torch.sum(abs_weight_matrix, dim=1)
-            step2 = torch.pow(step1, -0.5)
-            step3 = torch.diag(step2)
-            step4 = torch.linalg.matrix_exp(step3 @ abs_weight_matrix @ step3)
-            comms_matrix = step4.fill_diagonal_(0)
-            comms_matrix = comms_matrix ** comms_factor
+            net.fc1.weight.copy_(torch.tensor(fc1_weights.T, dtype=net.fc1.weight.dtype))
+            net.fc1.bias.zero_()
 
-        # Calculate regularization term
-        regularization_term = torch.sum(abs_weight_matrix * distance_matrix * comms_matrix.detach())
-
-        # Calculate total loss
-        task_loss = loss_fn(spk_outputs, targets)
-        loss_val = task_loss + regu_strength * regularization_term
-
-        # Gradient calculation and weight updates
-        optimizer.zero_grad()
-        loss_val.backward()
-        optimizer.step()
-        clip_tc(net.lif1.beta.detach())
-
-        # Store loss history
-        train_loss_hist.append(loss_val.item())
-
-    #Evaluations (every epoch)
-    net.eval()
-
-    #Training accuracy
-    acc = SF.accuracy_rate(spk_outputs, targets)
-    train_acc_hist.append(acc)
-
-    #Sum of regularized weights
-    rec_tot = torch.sum(torch.abs(net.lif1.recurrent.weight.detach()))
-    rec_tot_hist.append(rec_tot)
-
-    #Correlation of distance and weight matrices
-    corr_matrix = test_euclidean(distance_matrix, net.lif1.recurrent.weight.detach())
-    corr_hist.append(corr_matrix)
-
-    #Save membrane time constant matrix
-    converted_tc = (-time_step / np.log(net.lif1.beta.cpu().detach())) / 1e-3
-    tc_hist.append(converted_tc.numpy())
-
-    #Save weight matrix
-    weight_matrix.append(net.lif1.recurrent.weight.detach().cpu())
-
-    #Validation accuracy
-    with torch.no_grad():
-        net.eval()
-        total = 0
-        correct = 0
-
-        for data, targets in testloader:
+    for epoch in range(1, num_epochs + 1):
+        for i, (data, targets) in enumerate(iter(trainloader)):
+            # Load data on CUDA
             data = data.to(device)
             targets = targets.to(device)
 
-            test_spk, test_mem = net(data)
+            # Set model to training mode
+            net.train()
+            spk_outputs, mem_outputs = net(data)
 
-            _, predicted = test_spk.sum(dim=0).max(1)
-            total += targets.size(0)
-            correct += (predicted == targets).sum().item()
-            test_loss = loss_fn(test_spk, targets) + regu_strength * regularization_term
+            # Create absolute weight matrix (don't detach)
+            abs_weight_matrix = torch.abs(net.lif1.recurrent.weight)
 
-        test_acc_hist.append(correct / total)
-        test_loss_hist.append(test_loss.item())
+            # Calculate communicability (detach to prevent complex gradient issues)
+            with torch.no_grad():
+                step1 = torch.sum(abs_weight_matrix, dim=1)
+                step2 = torch.pow(step1, -0.5)
+                step3 = torch.diag(step2)
+                step4 = torch.linalg.matrix_exp(step3 @ abs_weight_matrix @ step3)
+                comms_matrix = step4.fill_diagonal_(0)
+                comms_matrix = comms_matrix ** comms_factor
 
-        G = netx.from_numpy_array(net.lif1.recurrent.weight.detach().cpu().numpy())
+            # Calculate regularization term
+            regularization_term = torch.sum(abs_weight_matrix * distance_matrix * comms_matrix.detach())
 
-        # Detect communities (e.g. Louvain or greedy modularity)
-        communities = list(greedy_modularity_communities(G))
+            # Calculate total loss
+            task_loss = loss_fn(spk_outputs, targets)
+            loss_val = task_loss + regu_strength * regularization_term
 
-        # Compute Newman's modularity Q
-        Q = modularity(G, communities, weight='weight')
+            # Gradient calculation and weight updates
+            optimizer.zero_grad()
+            loss_val.backward()
+            optimizer.step()
+            clip_tc(net.lif1.beta.detach())
 
-    #Print statements
-    #if epoch % 5 == 0:
-    print(f"Epoch {epoch}/{num_epochs} === Train loss: {loss_val.item():.2f} --- ", end = "")
-    print(f"Train accuracy: {acc * 100:.2f}% --- ", end = "")
-    print(f"Val. loss: {test_loss.item():.2f} --- ", end = "")
-    print(f"Val. accuracy: {100 * correct / total:.2f}% --- ", end = "")
-    print(f"Regularization term: {regularization_term.item():.4f}", end = "")
-    print(f"Modularity: {Q:.4f}")
+            # Store loss history
+            train_loss_hist.append(loss_val.item())
+
+        #Evaluations (every epoch)
+        net.eval()
+
+        #Training accuracy
+        acc = SF.accuracy_rate(spk_outputs, targets)
+        train_acc_hist.append(acc)
+
+        #Sum of regularized weights
+        rec_tot = torch.sum(torch.abs(net.lif1.recurrent.weight.detach()))
+        rec_tot_hist.append(rec_tot)
+
+        #Correlation of distance and weight matrices
+        corr_matrix = test_euclidean(distance_matrix, net.lif1.recurrent.weight.detach())
+        corr_hist.append(corr_matrix)
+
+        #Save membrane time constant matrix
+        converted_tc = (-time_step / np.log(net.lif1.beta.cpu().detach())) / 1e-3
+        tc_hist.append(converted_tc.numpy())
+
+        #Save weight matrix
+        weight_matrix.append(net.lif1.recurrent.weight.detach().cpu())
+
+        #Validation accuracy
+        with torch.no_grad():
+            net.eval()
+            total = 0
+            correct = 0
+
+            for data, targets in testloader:
+                data = data.to(device)
+                targets = targets.to(device)
+
+                test_spk, test_mem = net(data)
+
+                _, predicted = test_spk.sum(dim=0).max(1)
+                total += targets.size(0)
+                correct += (predicted == targets).sum().item()
+                test_loss = loss_fn(test_spk, targets) + regu_strength * regularization_term
+
+            test_acc_hist.append(correct / total)
+            test_loss_hist.append(test_loss.item())
+
+            G = netx.from_numpy_array(net.lif1.recurrent.weight.detach().cpu().numpy())
+
+            # Detect communities (e.g. Louvain or greedy modularity)
+            communities = list(greedy_modularity_communities(G))
+
+            # Compute Newman's modularity Q
+            Q = modularity(G, communities, weight='weight')
+
+        #Print statements
+        #if epoch % 5 == 0:
+        print(f"Epoch {epoch}/{num_epochs} === Train loss: {loss_val.item():.2f} --- ", end = "")
+        print(f"Train accuracy: {acc * 100:.2f}% --- ", end = "")
+        print(f"Val. loss: {test_loss.item():.2f} --- ", end = "")
+        print(f"Val. accuracy: {100 * correct / total:.2f}% --- ", end = "")
+        print(f"Regularization term: {regularization_term.item():.4f}", end = "")
+        print(f"Modularity: {Q:.4f}")
+
+        writer.writerow([
+        epoch,
+        loss_val.item(),
+        acc,
+        test_loss.item(),
+        correct / total,
+        regularization_term.item(),
+        Q
+        ])
+        csv_file.flush()
+
+    csv_file.close()
+    sig += 1
 
