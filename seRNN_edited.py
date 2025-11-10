@@ -188,7 +188,7 @@ sig = 0 #effective connecting distance of 6
 for run in range(15):
     csv_file = open(f"training_run_{run}.csv", mode="w", newline="")
     writer = csv.writer(csv_file)
-    writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "regularization_term", "modularity_Q"])
+    writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "regularization_term", "modularity_Q_clip", "modularity_Q_abs"])
 
     train_loss_hist = []
     train_acc_hist = []
@@ -214,6 +214,8 @@ for run in range(15):
         with torch.no_grad():
             net.fc1.weight.copy_(torch.tensor(fc1_weights.T, dtype=net.fc1.weight.dtype))
             net.fc1.bias.zero_()
+            
+    mods = []
 
     for epoch in range(1, num_epochs + 1):
         for i, (data, targets) in enumerate(iter(trainloader)):
@@ -295,13 +297,16 @@ for run in range(15):
             test_acc_hist.append(correct / total)
             test_loss_hist.append(test_loss.item())
 
-            G = netx.from_numpy_array(net.lif1.recurrent.weight.detach().cpu().numpy())
+            
 
-            # Detect communities (e.g. Louvain or greedy modularity)
-            communities = list(greedy_modularity_communities(G))
 
-            # Compute Newman's modularity Q
-            Q = modularity(G, communities, weight='weight')
+            a = weight_matrix[epoch]
+            b = a.cpu().detach().numpy()
+            c = np.abs(b)
+            g = netx.from_numpy_array(c, create_using=netx.DiGraph)
+            communities = netx.community.louvain_communities(g)
+            q_stat = netx.community.modularity(g, communities)
+            mods.append(q_stat)
 
         #Print statements
         #if epoch % 5 == 0:
@@ -309,8 +314,9 @@ for run in range(15):
         print(f"Train accuracy: {acc * 100:.2f}% --- ", end = "")
         print(f"Val. loss: {test_loss.item():.2f} --- ", end = "")
         print(f"Val. accuracy: {100 * correct / total:.2f}% --- ", end = "")
-        print(f"Regularization term: {regularization_term.item():.4f}", end = "")
-        print(f"Modularity: {Q:.4f}")
+        print(f"Regularization term: {regularization_term.item():.4f} ", end = "")
+        print(f"Modularity: {Qclip:.4f} ", end = "")
+        print(f"Modularity Abs: {Qabs:.4f}", end = "")
 
         writer.writerow([
         epoch,
@@ -319,7 +325,8 @@ for run in range(15):
         test_loss.item(),
         correct / total,
         regularization_term.item(),
-        Q
+        Qclip,
+        Qabs
         ])
         csv_file.flush()
 
