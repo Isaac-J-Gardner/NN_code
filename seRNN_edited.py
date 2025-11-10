@@ -177,7 +177,7 @@ def test_euclidean(x, y):
 print(f"Initial, pre-training correlation between distance and weight matrices (should be approx. 0): {test_euclidean(distance_matrix, net.lif1.recurrent.weight)}")
      
 #Training parameters
-num_epochs = 25
+num_epochs = 15
 comms_factor = 1
 
 #Regularization parameters
@@ -214,7 +214,7 @@ for run in range(15):
         with torch.no_grad():
             net.fc1.weight.copy_(torch.tensor(fc1_weights.T, dtype=net.fc1.weight.dtype))
             net.fc1.bias.zero_()
-            
+
     mods = []
 
     for epoch in range(1, num_epochs + 1):
@@ -297,26 +297,24 @@ for run in range(15):
             test_acc_hist.append(correct / total)
             test_loss_hist.append(test_loss.item())
 
-            
 
-
-            a = weight_matrix[epoch]
-            b = a.cpu().detach().numpy()
-            c = np.abs(b)
-            g = netx.from_numpy_array(c, create_using=netx.DiGraph)
-            communities = netx.community.louvain_communities(g)
-            q_stat = netx.community.modularity(g, communities)
-            mods.append(q_stat)
+        a = net.lif1.recurrent.weight.detach().cpu()
+        b = a.cpu().detach().numpy()
+        c = np.abs(b)
+        g = netx.from_numpy_array(c, create_using=netx.DiGraph)
+        communities = netx.community.louvain_communities(g)
+        q_stat = netx.community.modularity(g, communities)
+        mods.append(q_stat)
 
         #Print statements
         #if epoch % 5 == 0:
+        print(f"Run {run}", end = "")
         print(f"Epoch {epoch}/{num_epochs} === Train loss: {loss_val.item():.2f} --- ", end = "")
         print(f"Train accuracy: {acc * 100:.2f}% --- ", end = "")
         print(f"Val. loss: {test_loss.item():.2f} --- ", end = "")
         print(f"Val. accuracy: {100 * correct / total:.2f}% --- ", end = "")
         print(f"Regularization term: {regularization_term.item():.4f} ", end = "")
-        print(f"Modularity: {Qclip:.4f} ", end = "")
-        print(f"Modularity Abs: {Qabs:.4f}", end = "")
+        print(f"Modularity: {q_stat:.4f} ")
 
         writer.writerow([
         epoch,
@@ -325,8 +323,7 @@ for run in range(15):
         test_loss.item(),
         correct / total,
         regularization_term.item(),
-        Qclip,
-        Qabs
+        q_stat
         ])
         csv_file.flush()
 
